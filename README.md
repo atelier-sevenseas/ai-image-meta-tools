@@ -6,7 +6,7 @@ AI生成画像（PNG / WebP / JPEG）のメタデータから特定タグのみ�
 
 | ファイル名 | バージョン | 役割 |
 | :--- | :--- | :--- |
-| `clean_tags.py` | v2.0 | 指定タグのみを除去、またはメタデータ全体を完全消去する |
+| `clean_tags.py` | v2.1 | 指定タグのみを除去、またはメタデータ全体を完全消去する |
 | `dump_meta.py` | v1.0 | 画像内のメタデータ（テキスト / Exif / ステルス情報）をテキストファイルに書き出す |
 | `requirements.txt` | - | 必要なPythonパッケージ一覧 |
 | `LICENSE` | - | ライセンス情報（MIT License） |
@@ -34,52 +34,59 @@ pip install -r requirements.txt
 ### 主な機能
 
 - **指定タグのみ除去（デフォルトモード）**:
-  - 元のタグ表記を指定するだけで、スペースとアンダースコアの違い（`tag_name` / `tag name`）、括弧のエスケープ有無（`tag_(1)` / `tag_\(1\)`）、重み付け表記（`tag:1.2` 等）を自動でマッチ・除去します。
-  - タグ除去後に残る連続カンマ、空括弧（`()`, `{}`, `[]`）、全角空白を自動で整形します。
+  - 元のタグ表記を指定するだけで、スペースとアンダースコアの違い（`tag_name` / `tag name`）、括弧のエスケープ有無（`tag_(1)` / `tag_\(1\)`）、重み付け表記（`tag:1.2` 等）、NovelAI V4/V5の `artist:` プレフィックスおよび数値重み記法（`2.0::...::`）を自動でマッチ・除去します。
+  - タグ除去後に残る連続カンマ、空括弧（`()`, `{}`, `[]`）、空の数値重みブロック（`2.0::::`）、全角空白を自動で整形します。
+  - 外部のテキストファイル（`-f`）から除去タグリストを読み込めるため、スクリプト本体を書き換えずに運用できます。
 - **メタデータ完全消去モード（`-s` / `--strip-all`）**:
   - PNGのテキスト系チャンク（`tEXt` / `iTXt` / `zTXt` / `eXIf`）、WebP・JPEGのExif、NovelAIのステルス情報をすべて完全消去します。
   - PNGの色管理チャンク（`iCCP` / `sRGB` 等）や、NovelAI V5の**透過領域（アルファチャンネル）は維持**されます。
 - **安全機構**:
-  - 実行前に処理対象・内容を表示する確認プロンプト（`[y/N]`）を表示します（`--dry-run` 時や `-y` 指定時はスキップ）。
-  - 一時ファイル経由でアトミックに上書きし、変更がないファイルは上書きしません。
+  - `-o`（`--output`）を指定すると、元ファイルを上書きせず別ディレクトリへ出力します（`-r` 指定時はサブディレクトリ構造も維持）。
+  - 実行前に処理対象・出力先・内容を表示する確認プロンプト（`[y/N]`）を表示します（`--dry-run` 時や `-y` 指定時はスキップ）。
+  - 一時ファイル経由でアトミックに書き出し、変更がないファイルは上書きしません。
 
 ### 除去対象タグの設定
 
-スクリプト内の `DEFAULT_TARGET_TAGS` リストに、除去したいタグを記述してください。
+除去対象タグは以下のいずれかの方法で指定できます（優先順位：`-f` または `-t` ＞ スクリプト内 `DEFAULT_TARGET_TAGS`）。
 
-```python
-DEFAULT_TARGET_TAGS = [
-    "artist_tag_1",
-    "artist_tag_(2)",
-]
-```
+1. **外部タグファイルで指定（おすすめ・`-f`）**
+   1行に1タグを記述したUTF-8テキストファイル（例：`tags.txt`）を用意します。`#` で始まる行はコメントとして無視されます。
+   ```text
+   # 除去したい作家名・絵柄タグ
+   artist_tag_1
+   artist_tag_(2)
+   ```
+2. **スクリプト内に記述（デフォルト）**
+   `clean_tags.py` 内の `DEFAULT_TARGET_TAGS` リストに記述します。
+   ```python
+   DEFAULT_TARGET_TAGS = [
+       "artist_tag_1",
+       "artist_tag_(2)",
+   ]
+   ```
 
-> **補足**: 実行時に `-t`（`--tags`）オプションを指定した場合、`DEFAULT_TARGET_TAGS` の内容は**無視され**、`-t` で指定したタグのみが除去対象となります。
+> **補足**: 実行時に `-t`（`--tags`）または `-f`（`--tags-file`）を指定した場合、`DEFAULT_TARGET_TAGS` の内容は**無視され**、指定したタグのみが除去対象となります。
 
 ### 実行コマンド例
 
 ```bash
-# 単一ファイルから指定タグのみ除去する
+# 単一ファイルから指定タグのみ除去する（元ファイルを上書き）
 python clean_tags.py -i image.png
-python clean_tags.py -i image.webp
 
-# ディレクトリ直下の対象画像(.png / .webp / .jpg / .jpeg)を一括処理する
-python clean_tags.py -i ./image_dir
-
-# サブディレクトリも含めて再帰的に一括処理する
-python clean_tags.py -i ./image_dir -r
+# 外部タグファイルを使い、別ディレクトリへ出力する（元ファイルは上書きしない）
+python clean_tags.py -i ./image_dir -r -f tags.txt -o ./output_dir
 
 # ファイルを書き換えずに更新対象のみ確認する（ドライラン・確認プロンプトなし）
-python clean_tags.py -i ./image_dir -r --dry-run
+python clean_tags.py -i ./image_dir -r -f tags.txt --dry-run
 
-# コマンドラインから除去タグを指定して実行する（DEFAULT_TARGET_TAGS は無視）
+# コマンドラインから除去タグを直接指定する（DEFAULT_TARGET_TAGS は無視）
 python clean_tags.py -i image.png -t artist_tag_1 "artist_tag_(2)"
 
 # 単一ファイルのメタデータを完全消去する（ステルス情報含む・透過維持）
 python clean_tags.py -i image.png -s
 
-# ディレクトリ内のメタデータを一括で完全消去する（確認プロンプトをスキップ）
-python clean_tags.py -i ./image_dir -r -s -y
+# ディレクトリ内のメタデータを別フォルダへ完全消去して書き出す（確認プロンプトをスキップ）
+python clean_tags.py -i ./image_dir -r -s -o ./output_dir -y
 ```
 
 ### オプション一覧
@@ -87,9 +94,11 @@ python clean_tags.py -i ./image_dir -r -s -y
 | オプション | 説明 |
 | :--- | :--- |
 | `-i`, `--input` | （必須）処理対象の画像ファイル、またはディレクトリのパス |
+| `-o`, `--output` | 出力先ディレクトリ（省略時は元ファイルを上書き） |
 | `-r`, `--recursive` | ディレクトリ指定時にサブディレクトリも再帰的に処理する |
-| `-t`, `--tags` | 除去するタグをスペース区切りで指定。**指定時は `DEFAULT_TARGET_TAGS` は無視されます**（`-s` と同時指定不可） |
-| `-s`, `--strip-all` | メタデータ（テキストチャンク / Exif / ステルス情報）をすべて完全消去する（`-t` と同時指定不可） |
+| `-t`, `--tags` | 除去するタグをスペース区切りで指定。**指定時は `DEFAULT_TARGET_TAGS` は無視されます**（`-f` / `-s` と同時指定不可） |
+| `-f`, `--tags-file` | 除去するタグを1行ずつ記述したUTF-8テキストファイルを指定（`#` 始まりはコメント行、`-t` / `-s` と同時指定不可） |
+| `-s`, `--strip-all` | メタデータ（テキストチャンク / Exif / ステルス情報）をすべて完全消去する（`-t` / `-f` と同時指定不可） |
 | `--dry-run` | 実際の書き換えを行わず、更新予定のファイルと対象領域のみ表示する（確認プロンプトなし） |
 | `-y`, `--yes` | 実行前の確認プロンプト（`[y/N]`）をスキップする |
 
@@ -122,37 +131,32 @@ python dump_meta.py -i ./image_dir -r
 
 ## 推奨ワークフロー
 
-### 通常運用
+### 通常運用（別ディレクトリ出力で元画像を保護）
 
 ```bash
 # 1. ドライランで対象ファイルを確認
-python clean_tags.py -i ./image_dir -r --dry-run
+python clean_tags.py -i ./image_dir -r -f tags.txt --dry-run
 
-# 2. タグ除去（または -s で完全消去）を実行
-python clean_tags.py -i ./image_dir -r
+# 2. 別ディレクトリへ出力（元ファイルは上書きしない）
+python clean_tags.py -i ./image_dir -r -f tags.txt -o ./output_dir
 
-# 3. 必要に応じて処理後のメタデータを書き出して確認
-python dump_meta.py -i ./image_dir -r
+# 3. 必要に応じて出力側のメタデータを書き出して確認
+python dump_meta.py -i ./output_dir -r
 ```
 
 ### 慎重に確認したい場合（初回・タグ追加時・別ツールの画像を初めて扱う場合）
 
-1. 処理対象のディレクトリを別名で複製する（例：`./image_dir` → `./image_dir_work`）。
-2. 複製側に対して `clean_tags.py` を実行する。
-3. 原本側と複製側の双方で `dump_meta.py` を実行し、出力された `*_meta.txt` の差分を比較して意図通りに除去・消去されているか確認する。
+`-o` で別ディレクトリへ出力したあと、原本側と出力側の双方で `dump_meta.py` を実行し、出力された `*_meta.txt` の差分を比較します。
 
 ```bash
-# 複製側に対して処理を実行
-python clean_tags.py -i ./image_dir_work -r
-
-# 原本側・複製側の双方からメタデータを書き出して比較
+python clean_tags.py -i ./image_dir -r -f tags.txt -o ./output_dir
 python dump_meta.py -i ./image_dir -r
-python dump_meta.py -i ./image_dir_work -r
+python dump_meta.py -i ./output_dir -r
 ```
 
 ## 注意事項
 
-- 初回実行時や大量の画像を処理する前は、バックアップを取るか `--dry-run` で対象を確認することを推奨します。
+- `-o` を省略した場合は元ファイルを直接上書きします。大量の画像を処理する前は `-o` の併用か `--dry-run` での事前確認を推奨します。
 - NovelAIのステルス情報を編集または消去した場合、公式の改ざん検知用署名（`signed_hash`）とは一致しなくなります（一般的なメタデータ閲覧ツールでの表示には影響ありません）。
 
 ## ライセンス
@@ -162,7 +166,10 @@ python dump_meta.py -i ./image_dir_work -r
 ## 更新履歴
 
 ### 2026-11-23
-
+- **`clean_tags.py` v2.1**
+  - 外部タグリストファイル読み込みオプション（`-f` / `--tags-file`）を追加
+  - 別ディレクトリ出力オプション（`-o` / `--output`）を追加（元ファイルの上書きを回避可能）
+  - NovelAI V4/V5 の `artist:` プレフィックスおよび数値重み記法（`2.0::...::`）の自動整形・空ブロック削除に対応
 - **`clean_tags.py` v2.0**
   - メタデータ完全消去モード（`-s` / `--strip-all`）を追加（PNGの色管理チャンクおよびNovelAI V5の透過領域を維持したまま完全消去に対応）
   - 実行前の確認プロンプト（`[y/N]`）とスキップ用オプション（`-y` / `--yes`）を追加
@@ -171,6 +178,5 @@ python dump_meta.py -i ./image_dir_work -r
   - 新規作成（PNG / WebP / JPEGのテキストチャンク・Exif・ステルス情報を一括書き出し）
 
 ### 2026-11-22
-
 - **`clean_tags.py` v1.0**
   - 初版作成（ComfyUI / NovelAI / A1111・Forge 形式のPNG・WebP・JPEGに対する指定タグ除去機能）

@@ -1,6 +1,6 @@
 """AI生成画像(PNG / WebP / JPEG)のメタデータから指定タグを除去、またはメタデータを完全消去するスクリプト。
 
-Version: v2.0
+Version: v2.1
 Updated: 2026-11-23
 
 対応形式:
@@ -15,8 +15,8 @@ Updated: 2026-11-23
   # 単一ファイルから指定タグのみ除去する
   python clean_tags.py -i image.png
 
-  # ディレクトリ内を一括で指定タグ除去する（サブディレクトリ含む）
-  python clean_tags.py -i ./image_dir -r
+  # 外部タグリストファイルを使って別ディレクトリへ出力する（元ファイルは上書きしない）
+  python clean_tags.py -i ./image_dir -r -f tags.txt -o ./output_dir
 
   # ファイルを書き換えずに確認する（ドライラン・確認プロンプトなし）
   python clean_tags.py -i ./image_dir -r --dry-run
@@ -70,15 +70,20 @@ SUPPORTED_EXTENSIONS = {".png", ".webp", ".jpg", ".jpeg"}
 
 class TagCleaner:
     def __init__(self, target_tags: list[str]) -> None:
+        cleaned_tags = [
+            re.sub(r"\s+", " ", t.strip(" \t\r\n,"))
+            for t in target_tags
+        ]
         sorted_tags = sorted(
-            (t.strip() for t in target_tags if t.strip()),
+            (t for t in cleaned_tags if t),
             key=len,
             reverse=True,
         )
         if sorted_tags:
             joined = "|".join(self._build_tag_pattern(t) for t in sorted_tags)
+            # artist: プレフィックスおよび :1.2 形式の重みをオプショナルで吸収
             self.tag_pattern = re.compile(
-                rf"(?<![a-zA-Z0-9_\-])(?:{joined})(?:\s*:\s*[+-]?[0-9.]+)?(?![a-zA-Z0-9_\-])",
+                rf"(?<![a-zA-Z0-9_\-])(?:artist\s*:\s*)?(?:{joined})(?:\s*:\s*[+-]?[0-9.]+)?(?![a-zA-Z0-9_\-])",
                 re.IGNORECASE,
             )
         else:
@@ -86,7 +91,9 @@ class TagCleaner:
 
     @staticmethod
     def _build_tag_pattern(tag: str) -> str:
-        normalized = re.sub(r"\\([()])", r"\1", tag)
+        # 先頭に artist: が含まれている場合は除去して統一（正規表現本体側で自動対応するため）
+        normalized = re.sub(r"^artist\s*:\s*", "", tag, flags=re.IGNORECASE)
+        normalized = re.sub(r"\\([()])", r"\1", normalized)
         parts = []
         for ch in normalized:
             if ch in ("_", " "):
@@ -118,6 +125,10 @@ class TagCleaner:
             cleaned = re.sub(r"\s*,\s*\}", "}", cleaned)
             cleaned = re.sub(r"\[\s*,\s*", "[", cleaned)
             cleaned = re.sub(r"\s*,\s*\]", "]", cleaned)
+            # NovelAI V4/V5 の数値重み記法 (2.0::...::) 内のカンマ整形・空ブロック削除
+            cleaned = re.sub(r"([+-]?[0-9.]+::)\s*,\s*", r"\1", cleaned)
+            cleaned = re.sub(r"\s*,\s*::", "::", cleaned)
+            cleaned = re.sub(r"[+-]?[0-9.]+::\s*(?:,\s*)*::", "", cleaned)
             cleaned = re.sub(r"^[ \t]*,[ \t]*", "", cleaned, flags=re.MULTILINE)
             cleaned = re.sub(r",[ \t]*$", "", cleaned)
             cleaned = re.sub(r"\(\s*(?:,\s*)*\)", "", cleaned)
@@ -535,6 +546,7 @@ def _clean_exif_bytes(exif_bytes: bytes, cleaner: TagCleaner) -> tuple[bytes, bo
 
 
 def _write_atomic(filepath: Path, data: bytes) -> None:
+    filepath.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=filepath.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as tmp_file:
@@ -546,8 +558,19 @@ def _write_atomic(filepath: Path, data: bytes) -> None:
         raise
 
 
+def _resolve_output_path(
+    filepath: Path, input_root: Path, output_dir: Path | None
+) -> Path:
+    if output_dir is None:
+        return filepath
+    if input_root.is_dir():
+        return output_dir / filepath.relative_to(input_root)
+    return output_dir / filepath.name
+
+
 def clean_image(
     filepath: Path,
+    dest_path: Path,
     cleaner: TagCleaner | None,
     dry_run: bool = False,
     strip_all: bool = False,
@@ -580,12 +603,13 @@ def clean_image(
         detail = "+".join(
             label for label, flag in (("テキスト", text_mod), ("ステルス", stealth_mod)) if flag
         )
+        dest_info = f" -> {dest_path}" if dest_path != filepath else ""
         if dry_run:
-            print(f"[DRY-RUN] {action_label}予定 ({detail}): {filepath}")
+            print(f"[DRY-RUN] {action_label}予定 ({detail}): {filepath}{dest_info}")
             return "updated"
 
-        _write_atomic(filepath, data)
-        print(f"{action_label}完了 ({detail}): {filepath}")
+        _write_atomic(dest_path, data)
+        print(f"{action_label}完了 ({detail}): {filepath}{dest_info}")
         return "updated"
 
     if ext in (".webp", ".jpg", ".jpeg"):
@@ -621,16 +645,29 @@ def clean_image(
         detail = "+".join(
             label for label, flag in (("Exif", exif_mod), ("ステルス", stealth_mod)) if flag
         )
+        dest_info = f" -> {dest_path}" if dest_path != filepath else ""
         if dry_run:
-            print(f"[DRY-RUN] {action_label}予定 ({detail}): {filepath}")
+            print(f"[DRY-RUN] {action_label}予定 ({detail}): {filepath}{dest_info}")
             return "updated"
 
-        _write_atomic(filepath, data)
-        print(f"{action_label}完了 ({detail}): {filepath}")
+        _write_atomic(dest_path, data)
+        print(f"{action_label}完了 ({detail}): {filepath}{dest_info}")
         return "updated"
 
     print(f"スキップ (未対応形式): {filepath}")
     return "skipped"
+
+
+def load_tags_from_file(filepath: Path) -> list[str]:
+    if not filepath.is_file():
+        raise FileNotFoundError(f"タグファイルが見つかりません: {filepath}")
+    tags: list[str] = []
+    for line in filepath.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        tags.append(stripped)
+    return tags
 
 
 def collect_target_files(target: Path, recursive: bool) -> list[Path]:
@@ -646,6 +683,7 @@ def collect_target_files(target: Path, recursive: bool) -> list[Path]:
 
 def confirm_execution(
     target: Path,
+    output_dir: Path | None,
     file_count: int,
     recursive: bool,
     strip_all: bool,
@@ -656,6 +694,11 @@ def confirm_execution(
         print(f"対象: {target} 内の画像 {file_count} 件（{scope}）")
     else:
         print(f"対象: {target}")
+
+    if output_dir is not None:
+        print(f"出力: {output_dir}（元ファイルは上書きしません）")
+    else:
+        print("出力: 元ファイルを上書き")
 
     if strip_all:
         print("処理: メタデータ（テキスト / Exif / ステルス情報）を完全消去します")
@@ -685,6 +728,13 @@ def parse_args() -> argparse.Namespace:
         help="処理対象の画像ファイル、またはディレクトリ",
     )
     parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="出力先ディレクトリ（省略時は元ファイルを上書き）",
+    )
+    parser.add_argument(
         "-r",
         "--recursive",
         action="store_true",
@@ -698,6 +748,13 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=None,
         help="除去するタグをスペース区切りで指定（指定時は DEFAULT_TARGET_TAGS を無視）",
+    )
+    mode_group.add_argument(
+        "-f",
+        "--tags-file",
+        type=Path,
+        default=None,
+        help="除去するタグを1行ずつ記述したテキストファイルを指定（#始まりはコメント行）",
     )
     mode_group.add_argument(
         "-s",
@@ -722,10 +779,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    active_tags = None if args.strip_all else (
-        args.tags if args.tags is not None else DEFAULT_TARGET_TAGS
-    )
-    cleaner = None if args.strip_all else TagCleaner(active_tags)
+
+    if args.strip_all:
+        active_tags = None
+    elif args.tags_file is not None:
+        active_tags = load_tags_from_file(args.tags_file)
+    elif args.tags is not None:
+        active_tags = args.tags
+    else:
+        active_tags = DEFAULT_TARGET_TAGS
+
+    cleaner = None if args.strip_all else TagCleaner(active_tags or [])
     files = collect_target_files(args.input, args.recursive)
 
     if not files:
@@ -735,6 +799,7 @@ def main() -> None:
     if not args.dry_run and not args.yes:
         if not confirm_execution(
             target=args.input,
+            output_dir=args.output,
             file_count=len(files),
             recursive=args.recursive,
             strip_all=args.strip_all,
@@ -746,8 +811,10 @@ def main() -> None:
     counts = {"updated": 0, "unchanged": 0, "skipped": 0}
     for filepath in files:
         try:
+            dest_path = _resolve_output_path(filepath, args.input, args.output)
             status = clean_image(
                 filepath,
+                dest_path,
                 cleaner,
                 dry_run=args.dry_run,
                 strip_all=args.strip_all,
