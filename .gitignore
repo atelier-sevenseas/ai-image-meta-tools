@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Temporary files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# テスト用画像・メタデータ出力の誤コミット防止
+*.png
+*.PNG
+*.webp
+*.WEBP
+*.jpg
+*.jpeg
+*.JPG
+*.JPEG
+*_meta.txt
